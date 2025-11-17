@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Aggregator Web</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: auto; padding: 20px; }
+        textarea { width: 100%; min-height: 150px; padding: 10px; margin-bottom: 10px; }
+        button { padding: 10px 20px; cursor: pointer; }
+        #output { border: 1px solid #ccc; padding: 15px; margin-top: 20px; white-space: pre-wrap; background: #f9f9f9; }
+        .spinner { border: 4px solid rgba(0,0,0,.1); border-top: 4px solid #3498db; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; display: none; margin-left: 10px; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <h1>AI Aggregator Konsensus Chat</h1>
+    <p>Masukkan pertanyaan Anda di bawah. Back-End akan menggunakan Model Juri untuk mendapatkan jawaban terbaik.</p>
+
+    <textarea id="promptInput" placeholder="Contoh: Jelaskan Teori Relativitas Umum dalam 5 poin utama."></textarea>
+    <button onclick="submitPrompt()">Kirim</button>
+    <span id="loadingSpinner" class="spinner"></span>
+
+    <h2>Jawaban Konsensus:</h2>
+    <div id="output">Hasil akan muncul di sini...</div>
+
+    <script>
+        // PASTIKAN URL INI SESUAI DENGAN LOKASI FASTAPI ANDA!
+        const API_URL = 'http://127.0.0.1:8000/api/aggregate'; 
+
+        async function submitPrompt() {
+            const prompt = document.getElementById('promptInput').value;
+            const outputDiv = document.getElementById('output');
+            const spinner = document.getElementById('loadingSpinner');
+
+            if (!prompt) {
+                alert('Prompt tidak boleh kosong!');
+                return;
+            }
+
+            outputDiv.innerHTML = 'Memproses... Memanggil model AI secara paralel...';
+            spinner.style.display = 'inline-block';
+            
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ prompt: prompt })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                
+                let outputText = `*** JAWABAN KONSENSUS AKHIR (Oleh Model Juri) ***\n\n${data.final_consensus_answer}\n\n`;
+                outputText += '----------------------------------------------------------\n';
+                outputText += '*** JAWABAN INDIVIDU DARI PEKERJA ***\n';
+
+                data.individual_responses.forEach(res => {
+                    outputText += `\n[Model: ${res.model_name}] (Sukses: ${res.is_successful}):\n${res.response}\n`;
+                });
+
+                outputDiv.innerText = outputText;
+
+            } catch (error) {
+                outputDiv.innerText = `Terjadi kesalahan saat memanggil API: ${error.message}. Pastikan Back-End (FastAPI) berjalan!`;
+                console.error('Fetch error:', error);
+            } finally {
+                spinner.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
