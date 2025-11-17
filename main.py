@@ -1,139 +1,148 @@
 # File: main.py
+# (Versi lengkap dengan CORS untuk web)
+
 import os
 import asyncio
 from typing import List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from google import genai
+import google.generativeai as genai
 from openai import OpenAI
 
-# --- Konfigurasi Kunci API (Disarankan menggunakan file .env) ---
-# Dapatkan kunci API dari environment variables
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY")
+# === TAMBAHKAN IMPORT INI ===
+from fastapi.middleware.cors import CORSMiddleware
+# =============================
 
-# Inisialisasi Klien API
+# --- 1. Konfigurasi Kunci API ---
+# Pastikan Anda mengatur ini di terminal Anda
+# (cth: export GEMINI_API_KEY=...)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+if not GEMINI_API_KEY or not OPENAI_API_KEY:
+    print("Peringatan: Pastikan GEMINI_API_KEY dan OPENAI_API_KEY sudah diatur.")
+
+# --- 2. Inisialisasi Klien API ---
 try:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel('gemini-pro')
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
 except Exception as e:
     print(f"Peringatan: Gagal inisialisasi klien API. {e}")
 
 app = FastAPI(title="AI Aggregator Konsensus API")
 
-# --- Skema Data Pydantic ---
+# === 3. Pengaturan CORS (PENTING UNTUK WEB) ===
+# Ini mengizinkan browser (dari 'null' / file://) untuk mengakses API Anda
+origins = [
+    "null", # Untuk mengizinkan permintaan dari file://
+    "http://127.0.0.1",
+    "http://localhost",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Izinkan semua metode (POST, GET, dll)
+    allow_headers=["*"], # Izinkan semua header
+)
+# =================================================
+
+# --- 4. Definisi Model Data (Pydantic) ---
 class PromptRequest(BaseModel):
     prompt: str
+    models: List[str] = ["gemini", "gpt"]
 
 class ModelResponse(BaseModel):
     model_name: str
     response: str
-    is_successful: bool
 
-class AggregatedResponse(BaseModel):
-    final_consensus_answer: str
-    individual_responses: List[ModelResponse]
-
-# --- Fungsi Panggilan Asinkronus ---
-
-async def call_llm(client, model_name: str, prompt: str, is_gemini: bool = True) -> ModelResponse:
-    """Fungsi pembantu untuk memanggil LLM (Gemini atau OpenAI)"""
+# --- 5. Fungsi Helper Pemanggil LLM ---
+async def call_llm(model_name: str, prompt: str) -> ModelResponse:
+    """Memanggil LLM yang dipilih secara asynchronous."""
     try:
-        if is_gemini:
+        if model_name == "gemini":
+            response = await asyncio.to_thread(gemini_model.generate_content, prompt)
+            return ModelResponse(model_name="Gemini", response=response.text)
+        
+        elif model_name == "gpt":
             response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=model_name,
-                contents=prompt,
+                openai_client.chat.completions.create,
+                model="gpt-3.5-turbo", # atau "gpt-4"
+                messages=[{"role": "user", "content": prompt}]
             )
-            text = response.text
-        else: # OpenAI
-            response = await asyncio.to_thread(
-                client.chat.completions.create,
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = response.choices[0].message.content
+            return ModelResponse(model_name="GPT (OpenAI)", response=response.choices[0].message.content)
+        
+        else:
+            return ModelResponse(model_name=model_name, response="Model tidak dikenal.")
             
-        return ModelResponse(
-            model_name=model_name,
-            response=text,
-            is_successful=True
-        )
     except Exception as e:
-        return ModelResponse(
-            model_name=model_name,
-            response=f"Error: Gagal memanggil {model_name}. {e}",
-            is_successful=False
-        )
+        print(f"Error memanggil {model_name}: {e}")
+        return ModelResponse(model_name=model_name, response=f"Gagal mendapatkan respons: {e}")
 
-# --- Logika Konsensus Kompleks ---
+# --- 6. Fungsi Logika Konsensus ---
+async def generate_consensus(prompt: str, responses: List[ModelResponse]) -> str:
+    """Menghasilkan ringkasan konsensus dari berbagai respons LLM."""
+    
+    # Jika hanya satu respons atau terjadi error, kembalikan respons pertama
+    if len(responses) == 1:
+        return responses[0].response
 
-async def generate_consensus(responses: List[ModelResponse], original_prompt: str) -> str:
+    # Buat prompt baru untuk AI konsensus
+    consensus_prompt = f"""
+    Tugas Anda adalah bertindak sebagai editor ahli.
+    Anda telah menerima beberapa jawaban dari AI yang berbeda untuk pertanyaan awal pengguna.
+    
+    Pertanyaan Pengguna: "{prompt}"
+
+    Berikut adalah jawaban-jawaban tersebut:
     """
-    Logika Agregasi: Menggunakan Model Juri (Gemini-Pro) untuk
-    merangkum dan memilih jawaban terbaik.
+    
+    for resp in responses:
+        consensus_prompt += f"\n--- Jawaban dari {resp.model_name} ---\n{resp.response}\n--- Akhir Jawaban ---\n"
+        
+    consensus_prompt += """
+    Harap sintesiskan jawaban-jawaban ini menjadi satu jawaban akhir yang kohesif, akurat, dan komprehensif. 
+    Ambil poin-poin terbaik dari setiap jawaban. Jangan hanya mendaftar apa yang dikatakan setiap AI.
+    Tuliskan jawaban akhir seolah-olah Anda menjawab pertanyaan pengguna secara langsung.
     """
-    successful_responses = [res for res in responses if res.is_successful]
+    
+    try:
+        # Menggunakan Gemini untuk membuat konsensus
+        consensus_response = await asyncio.to_thread(gemini_model.generate_content, consensus_prompt)
+        return consensus_response.text
+    except Exception as e:
+        print(f"Error saat membuat konsensus: {e}")
+        return f"Gagal membuat konsensus. Error: {e}"
+
+# --- 7. API Endpoint Utama ---
+@app.post("/api/aggregate", response_model=ModelResponse)
+async def aggregate_responses(request: PromptRequest):
+    """
+    Menerima prompt, mengirimkannya ke beberapa LLM, 
+    dan mengembalikan konsensus.
+    """
+    if not request.prompt:
+        raise HTTPException(status_code=400, detail="Prompt tidak boleh kosong.")
+        
+    # Panggil semua model secara paralel
+    tasks = [call_llm(model_name, request.prompt) for model_name in request.models]
+    model_responses = await asyncio.gather(*tasks)
+    
+    # Filter respons yang gagal
+    successful_responses = [r for r in model_responses if "Gagal mendapatkan respons" not in r.response]
     
     if not successful_responses:
-        return "Maaf, tidak ada model yang berhasil memberikan jawaban."
-
-    # 1. Kumpulkan semua jawaban sukses
-    combined_answers = "\n\n".join(
-        [f"[{res.model_name}]: {res.response}" for res in successful_responses]
-    )
-
-    # 2. Buat prompt untuk Model Juri (menggunakan GPT-4o sebagai contoh Juri)
-    jury_prompt = (
-        "Anda adalah Juri AI. Tugas Anda adalah membaca prompt asli di bawah, "
-        "kemudian menganalisis jawaban dari beberapa model AI yang berbeda, "
-        "dan merangkumnya menjadi jawaban tunggal yang paling akurat, komprehensif, dan terbaik."
-        "\n\n--- PROMPT ASLI ---\n"
-        f"{original_prompt}"
-        "\n\n--- JAWABAN MODEL LAIN (Analisis ini) ---\n"
-        f"{combined_answers}"
-        "\n\n--- JAWABAN KONSENSUS TUNGGAL (Jawaban Anda) ---"
-    )
-
-    # 3. Panggil Model Juri (Di sini kita menggunakan GPT-4o karena kompleksitasnya)
-    try:
-        jury_response = await call_llm(
-            client=openai_client, 
-            model_name="gpt-4o", # Model paling canggih sebagai Juri
-            prompt=jury_prompt,
-            is_gemini=False
-        )
-        if jury_response.is_successful:
-            return jury_response.response
-        else:
-            return f"Logika Konsensus gagal: {jury_response.response}. Mengembalikan semua jawaban individu."
-    except Exception:
-        # Fallback jika panggilan Juri gagal
-        return "Logika Konsensus gagal. Mengembalikan gabungan jawaban mentah."
-
-# --- ENDPOINT UTAMA ---
-
-@app.post("/api/aggregate")
-async def aggregate_ai_responses(request: PromptRequest) -> AggregatedResponse:
-    prompt = request.prompt
-
-    # 1. Menjalankan semua panggilan API secara paralel (Model yang Saling Bekerja)
-    tasks = [
-        call_llm(gemini_client, "gemini-2.5-flash", prompt, True), # Pekerja 1
-        call_llm(openai_client, "gpt-3.5-turbo", prompt, False),  # Pekerja 2
-        # --- Tambahkan Ryhar API di sini jika detailnya diketahui ---
-        # call_ryhar_api_async(ryhar_client, prompt) # Pekerja 3
-    ]
+        raise HTTPException(status_code=500, detail="Semua model AI gagal merespons.")
+        
+    # Hasilkan konsensus
+    consensus_text = await generate_consensus(request.prompt, successful_responses)
     
-    individual_responses: List[ModelResponse] = await asyncio.gather(*tasks)
+    return ModelResponse(model_name="Konsensus", response=consensus_text)
 
-    # 2. Logika Konsensus (Model Juri bekerja)
-    final_answer = await generate_consensus(individual_responses, prompt)
+# --- 8. (Opsional) Endpoint Root ---
+@app.get("/")
+def read_root():
+    return {"status": "AI Aggregator API sedang berjalan!"}
 
-    return AggregatedResponse(
-        final_consensus_answer=final_answer,
-        individual_responses=individual_responses
-    )
-
-# --- Cara Menjalankan Back-End ---
-# Jalankan server: uvicorn main:app --reload
