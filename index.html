@@ -2,76 +2,176 @@
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <title>AI Aggregator Web</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Aggregator</title>
     <style>
-        body { font-family: sans-serif; max-width: 800px; margin: auto; padding: 20px; }
-        textarea { width: 100%; min-height: 150px; padding: 10px; margin-bottom: 10px; }
-        button { padding: 10px 20px; cursor: pointer; }
-        #output { border: 1px solid #ccc; padding: 15px; margin-top: 20px; white-space: pre-wrap; background: #f9f9f9; }
-        .spinner { border: 4px solid rgba(0,0,0,.1); border-top: 4px solid #3498db; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; display: none; margin-left: 10px; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f4f7f6;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 800px;
+            background-color: #ffffff;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            overflow: hidden;
+        }
+        header {
+            padding: 20px;
+            background-color: #007bff;
+            color: white;
+            text-align: center;
+        }
+        header h1 {
+            margin: 0;
+            font-size: 1.5em;
+        }
+        main {
+            padding: 20px;
+        }
+        #prompt-form {
+            display: flex;
+            gap: 10px;
+        }
+        #prompt-input {
+            flex-grow: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+        }
+        #submit-btn {
+            padding: 12px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        #submit-btn:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        #submit-btn:disabled {
+            background-color: #a0a0a0;
+            cursor: not-allowed;
+        }
+        #response-area {
+            margin-top: 20px;
+            padding: 20px;
+            background-color: #f9f9f9;
+            border-radius: 6px;
+            border: 1px solid #eee;
+            min-height: 100px;
+            white-space: pre-wrap; /* Membuat teks menghargai baris baru dan spasi */
+            line-height: 1.6;
+        }
+        #status-message {
+            margin-top: 15px;
+            text-align: center;
+            font-style: italic;
+            color: #555;
+            display: none; /* Sembunyi secara default */
+        }
     </style>
 </head>
 <body>
-    <h1>AI Aggregator Konsensus Chat</h1>
-    <p>Masukkan pertanyaan Anda di bawah. Back-End akan menggunakan Model Juri untuk mendapatkan jawaban terbaik.</p>
 
-    <textarea id="promptInput" placeholder="Contoh: Jelaskan Teori Relativitas Umum dalam 5 poin utama."></textarea>
-    <button onclick="submitPrompt()">Kirim</button>
-    <span id="loadingSpinner" class="spinner"></span>
+    <div class="container">
+        <header>
+            <h1>AI Aggregator Konsensus</h1>
+        </header>
+        <main>
+            <form id="prompt-form">
+                <input type="text" id="prompt-input" placeholder="Ketik pertanyaan Anda di sini..." required>
+                <button type="submit" id="submit-btn">Kirim</button>
+            </form>
 
-    <h2>Jawaban Konsensus:</h2>
-    <div id="output">Hasil akan muncul di sini...</div>
+            <div id="status-message"></div>
+            <div id="response-area">
+                Jawaban akan muncul di sini...
+            </div>
+        </main>
+    </div>
 
     <script>
-        // PASTIKAN URL INI SESUAI DENGAN LOKASI FASTAPI ANDA!
-        const API_URL = 'http://127.0.0.1:8000/api/aggregate'; 
+        // Alamat API Back-end Anda
+        const API_URL = "http://127.0.0.1:8000/api/aggregate";
 
-        async function submitPrompt() {
-            const prompt = document.getElementById('promptInput').value;
-            const outputDiv = document.getElementById('output');
-            const spinner = document.getElementById('loadingSpinner');
+        // Ambil elemen DOM
+        const form = document.getElementById('prompt-form');
+        const input = document.getElementById('prompt-input');
+        const submitBtn = document.getElementById('submit-btn');
+        const responseArea = document.getElementById('response-area');
+        const statusMessage = document.getElementById('status-message');
 
-            if (!prompt) {
-                alert('Prompt tidak boleh kosong!');
-                return;
-            }
-
-            outputDiv.innerHTML = 'Memproses... Memanggil model AI secara paralel...';
-            spinner.style.display = 'inline-block';
+        // Tangani saat form disubmit
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault(); // Hentikan reload halaman
             
+            const promptText = input.value.trim();
+            if (!promptText) return;
+
+            // Nonaktifkan tombol dan tampilkan status
+            setLoadingState(true, "Memproses... Menghubungi Gemini dan GPT...");
+
             try {
+                // Kirim request ke API Back-end (main.py)
                 const response = await fetch(API_URL, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ prompt: prompt })
+                    body: JSON.stringify({
+                        prompt: promptText,
+                        models: ["gemini", "gpt"] // Minta kedua model
+                    }),
                 });
 
                 if (!response.ok) {
-                    throw new Error(`HTTP error! Status: ${response.status}`);
+                    // Tangani jika server error (bukan error jaringan)
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || `Error HTTP: ${response.status}`);
                 }
 
+                // Ambil data JSON dari respons
                 const data = await response.json();
                 
-                let outputText = `*** JAWABAN KONSENSUS AKHIR (Oleh Model Juri) ***\n\n${data.final_consensus_answer}\n\n`;
-                outputText += '----------------------------------------------------------\n';
-                outputText += '*** JAWABAN INDIVIDU DARI PEKERJA ***\n';
-
-                data.individual_responses.forEach(res => {
-                    outputText += `\n[Model: ${res.model_name}] (Sukses: ${res.is_successful}):\n${res.response}\n`;
-                });
-
-                outputDiv.innerText = outputText;
+                // Tampilkan respons konsensus
+                responseArea.textContent = data.response; // 'data.response' berisi teks konsensus
+                setLoadingState(false);
 
             } catch (error) {
-                outputDiv.innerText = `Terjadi kesalahan saat memanggil API: ${error.message}. Pastikan Back-End (FastAPI) berjalan!`;
+                // Tangani jika ada error (server mati, jaringan putus, CORS)
                 console.error('Fetch error:', error);
-            } finally {
-                spinner.style.display = 'none';
+                let errorMessage = `Terjadi kesalahan: ${error.message}.`;
+                if (error.message.includes('Failed to fetch')) {
+                    errorMessage += "\n\nPastikan server back-end (main.py) Anda sudah berjalan dan CORS sudah diatur dengan benar.";
+                }
+                responseArea.textContent = errorMessage;
+                setLoadingState(false);
+            }
+        });
+
+        function setLoadingState(isLoading, message = "") {
+            if (isLoading) {
+                submitBtn.disabled = true;
+                statusMessage.textContent = message;
+                statusMessage.style.display = 'block';
+                responseArea.textContent = ""; // Kosongkan respons lama
+            } else {
+                submitBtn.disabled = false;
+                statusMessage.style.display = 'none';
             }
         }
     </script>
+
 </body>
 </html>
